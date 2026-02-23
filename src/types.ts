@@ -30,7 +30,7 @@ export const FACET_REGISTRY: Record<string, FacetConfig> = {
     label: "Path",
     extractValue: (log) => log.path,
   },
-  statusCode: {
+  status: {
     label: "Status",
     extractValue: (log) => log.statusCode,
     aliases: ["status"],

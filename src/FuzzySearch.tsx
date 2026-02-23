@@ -49,9 +49,14 @@ function getFilteredValues(
   return values.sort((a, b) => String(a).localeCompare(String(b)));
 }
 
+type DropdownOption =
+  | { kind: "facet"; facetKey: string; label: string }
+  | { kind: "value"; value: string | number; facetKey: string };
+
 export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
   const [tags, setTags] = useState<FacetTag[]>([]);
   const [inputValue, setInputValue] = useState("");
+  const [inputFocused, setInputFocused] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -59,29 +64,70 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const { inValueMode, facetKey, valuePrefix } = parseValueMode(inputValue);
+  const inFacetMode = inputValue.indexOf(":") === -1;
 
-  const dropdownOptions = useMemo(() => {
+  const dropdownOptions = useMemo((): DropdownOption[] => {
+    if (inFacetMode) {
+      const facetFilter = inputValue.trim().toLowerCase();
+      return Object.entries(FACET_REGISTRY)
+        .filter(([key, config]) => {
+          if (!facetFilter) return true;
+          const matchesKey = key.toLowerCase().includes(facetFilter);
+          const matchesLabel = config.label.toLowerCase().includes(facetFilter);
+          const matchesAlias = config.aliases?.some((a) =>
+            a.toLowerCase().includes(facetFilter)
+          );
+          return matchesKey || matchesLabel || !!matchesAlias;
+        })
+        .map(([key, config]) => ({
+          kind: "facet" as const,
+          facetKey: key,
+          label: config.label,
+        }));
+    }
     if (!inValueMode || !facetKey) return [];
-    return getFilteredValues(data, facetKey, valuePrefix);
-  }, [data, inValueMode, facetKey, valuePrefix]);
+    return getFilteredValues(data, facetKey, valuePrefix).map((v) => ({
+      kind: "value" as const,
+      value: v,
+      facetKey,
+    }));
+  }, [data, inputValue, inFacetMode, inValueMode, facetKey, valuePrefix]);
 
-  // Show dropdown when in value mode and facet is valid
+  const showDropdown = (inFacetMode && inputFocused) || inValueMode;
+
+  // Show dropdown when in facet mode (focused + empty) or value mode; reset highlighted index
   useEffect(() => {
-    setDropdownOpen(inValueMode);
+    setDropdownOpen(showDropdown);
     setHighlightedIndex(0);
-  }, [inValueMode]);
+  }, [showDropdown]);
 
   // Filter data by tags and notify parent
+  // Same facet chosen multiple times (e.g. method:delete, method:post) → OR within that facet
+  // Different facets → AND across facets
   useEffect(() => {
-    let filtered = data;
+    if (tags.length === 0) {
+      onChange(data);
+      return;
+    }
+    const tagsByFacet = new Map<string, Set<string>>();
     for (const tag of tags) {
       const config = FACET_REGISTRY[tag.facet];
       if (!config) continue;
-      filtered = filtered.filter((log) => {
-        const v = config.extractValue(log);
-        return String(v) === String(tag.value);
-      });
+      const key = String(tag.value);
+      if (!tagsByFacet.has(tag.facet)) {
+        tagsByFacet.set(tag.facet, new Set());
+      }
+      tagsByFacet.get(tag.facet)!.add(key);
     }
+    const filtered = data.filter((log) => {
+      for (const [facet, values] of tagsByFacet) {
+        const config = FACET_REGISTRY[facet];
+        if (!config) continue;
+        const v = String(config.extractValue(log));
+        if (!values.has(v)) return false;
+      }
+      return true;
+    });
     onChange(filtered);
   }, [data, tags, onChange]);
 
@@ -96,13 +142,26 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  function addTag(value: string | number) {
-    if (!facetKey) return;
-    setTags((t) => [...t, { facet: facetKey, value }]);
-    setInputValue("");
-    setDropdownOpen(false);
+  function selectFacet(facetKey: string) {
+    setInputValue(`${facetKey}:`);
     setHighlightedIndex(0);
     inputRef.current?.focus();
+  }
+
+  function addTag(value: string | number, facetKeyForTag: string) {
+    setTags((t) => [...t, { facet: facetKeyForTag, value }]);
+    setInputValue("");
+    setHighlightedIndex(0);
+    inputRef.current?.focus();
+    // Keep dropdown open - user returns to facet mode (empty input) and can add more filters
+  }
+
+  function handleSelectOption(opt: DropdownOption) {
+    if (opt.kind === "facet") {
+      selectFacet(opt.facetKey);
+    } else {
+      addTag(opt.value, opt.facetKey);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -128,7 +187,7 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
     if (e.key === "Enter") {
       e.preventDefault();
       const opt = dropdownOptions[highlightedIndex];
-      if (opt !== undefined) addTag(opt);
+      if (opt !== undefined) handleSelectOption(opt);
     }
   }
 
@@ -161,24 +220,38 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
       </div>
 
       {/* Inline input - combobox pattern */}
-      <input
-        ref={inputRef}
-        type="text"
-        role="combobox"
-        aria-expanded={dropdownOpen}
-        aria-controls={dropdownOpen ? listboxId : undefined}
-        aria-activedescendant={
-          dropdownOpen && dropdownOptions.length > 0 ? getOptionId(highlightedIndex) : undefined
-        }
-        aria-autocomplete="list"
-        aria-haspopup="listbox"
-        aria-label="Filter by facet. Type facet name followed by colon, e.g. method:"
-        value={inputValue}
-        onChange={(e) => setInputValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Type facet: to filter..."
-        className="flex-1 min-w-[120px] bg-transparent text-zinc-100 placeholder-zinc-500 border-none outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-zinc-900 rounded py-1"
-      />
+      <div className="flex flex-1 min-w-[120px] items-center">
+        <input
+          ref={inputRef}
+          type="text"
+          role="combobox"
+          aria-expanded={dropdownOpen ? "true" : "false"}
+          aria-controls={dropdownOpen ? listboxId : undefined}
+          aria-activedescendant={
+            dropdownOpen && dropdownOptions.length > 0 ? getOptionId(highlightedIndex) : undefined
+          }
+          aria-autocomplete="list"
+          aria-haspopup="listbox"
+          aria-label="Filter by facet. Type facet name followed by colon, e.g. method:"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onFocus={() => setInputFocused(true)}
+          onBlur={() => setInputFocused(false)}
+          onKeyDown={handleKeyDown}
+          placeholder="Type facet: to filter..."
+          className="flex-1 min-w-0 bg-transparent text-zinc-100 placeholder-zinc-500 border-none outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-zinc-900 rounded py-1"
+        />
+        {tags.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setTags([])}
+            className="ml-2 shrink-0 p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50 rounded transition-colors"
+            aria-label="Clear all filters"
+          >
+            Clear
+          </button>
+        )}
+      </div>
 
       {/* Screen reader live region for dropdown state */}
       <div
@@ -188,7 +261,11 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
         className="sr-only"
       >
         {dropdownOpen && dropdownOptions.length > 0
-          ? `${dropdownOptions.length} options, ${String(dropdownOptions[highlightedIndex])} selected`
+          ? (() => {
+              const opt = dropdownOptions[highlightedIndex];
+              const selectedText = opt ? (opt.kind === "facet" ? opt.label : String(opt.value)) : "";
+              return `${dropdownOptions.length} options, ${selectedText} selected`;
+            })()
           : ""}
       </div>
 
@@ -198,22 +275,23 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
           ref={dropdownRef}
           id={listboxId}
           role="listbox"
-          aria-label="Facet values"
+          aria-label={inFacetMode ? "Available facets" : "Facet values"}
           className="absolute left-0 right-0 top-full mt-1 z-10 bg-zinc-800 border border-zinc-700 rounded-lg shadow-lg max-h-60 overflow-auto"
         >
           {dropdownOptions.map((opt, i) => (
             <li
-              key={String(opt)}
+              key={opt.kind === "facet" ? opt.facetKey : `${opt.facetKey}-${opt.value}`}
               id={getOptionId(i)}
               role="option"
-              aria-selected={i === highlightedIndex ? "true" : "false"}
+              aria-selected={i === highlightedIndex}
               className={`px-3 py-2 text-sm cursor-pointer transition-colors ${
                 i === highlightedIndex ? "bg-blue-600/30 text-zinc-100" : "text-zinc-300 hover:bg-zinc-700/50"
               }`}
               onMouseEnter={() => setHighlightedIndex(i)}
-              onClick={() => addTag(opt)}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleSelectOption(opt)}
             >
-              {String(opt)}
+              {opt.kind === "facet" ? opt.label : String(opt.value)}
             </li>
           ))}
         </ul>
