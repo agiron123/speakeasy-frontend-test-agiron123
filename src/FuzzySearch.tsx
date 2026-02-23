@@ -1,3 +1,10 @@
+/**
+ * FuzzySearch – facet-based filter component for HttpLog data.
+ *
+ * Production note: This implementation uses client-side filtering. At scale,
+ * use a backend API for filtering/pagination, debounced facet value requests,
+ * and index/aggregation for facet values (not full scan).
+ */
 import { useState, useRef, useEffect, useMemo } from "react";
 import type { HttpLog, FacetTag } from "./types";
 import { FACET_REGISTRY, resolveFacetKey } from "./types";
