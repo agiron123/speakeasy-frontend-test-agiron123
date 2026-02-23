@@ -140,18 +140,18 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
       ref={containerRef}
       className="relative flex flex-wrap items-center gap-2 w-full max-w-2xl border border-zinc-700 rounded-lg bg-zinc-900 p-2 min-h-[44px]"
     >
-      {/* Tags area */}
+      {/* Tags area - pills with remove on hover */}
       <div className="flex flex-wrap items-center gap-2">
         {tags.map((tag, i) => (
           <span
             key={`${tag.facet}-${tag.value}-${i}`}
-            className="inline-flex items-center gap-1 bg-blue-600/80 text-zinc-100 rounded px-2 py-0.5 text-sm"
+            className="group inline-flex items-center gap-1 bg-blue-600/80 text-zinc-100 rounded px-2 py-0.5 text-sm"
           >
             {tag.facet}:{tag.value}
             <button
               type="button"
               onClick={() => setTags((t) => t.filter((_, j) => j !== i))}
-              className="ml-1 hover:bg-blue-500/50 rounded leading-none"
+              className="ml-1 opacity-70 group-hover:opacity-100 hover:bg-blue-500/50 rounded leading-none transition-opacity"
               aria-label={`Remove ${tag.facet}:${tag.value}`}
             >
               ×
@@ -207,8 +207,8 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
               id={getOptionId(i)}
               role="option"
               aria-selected={i === highlightedIndex ? "true" : "false"}
-              className={`px-3 py-2 text-sm cursor-pointer ${
-                i === highlightedIndex ? "bg-zinc-700 text-zinc-100" : "text-zinc-300"
+              className={`px-3 py-2 text-sm cursor-pointer transition-colors ${
+                i === highlightedIndex ? "bg-blue-600/30 text-zinc-100" : "text-zinc-300 hover:bg-zinc-700/50"
               }`}
               onMouseEnter={() => setHighlightedIndex(i)}
               onClick={() => addTag(opt)}
