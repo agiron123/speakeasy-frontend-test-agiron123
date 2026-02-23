@@ -26,6 +26,36 @@ function parseValueMode(inputValue: string): {
   return { inValueMode: true, facetKey, valuePrefix };
 }
 
+/** Parse "facetKey:value" string; returns null if invalid. Status facet values are parsed as numbers. */
+function parseFacetValue(part: string): { facetKey: string; value: string | number } | null {
+  const colonIdx = part.indexOf(":");
+  if (colonIdx === -1) return null;
+  const facetKey = part.slice(0, colonIdx).trim();
+  const valueStr = part.slice(colonIdx + 1).trim();
+  if (!facetKey || !valueStr || !FACET_REGISTRY[facetKey]) return null;
+  const value: string | number = facetKey === "status" && /^\d+$/.test(valueStr) ? Number(valueStr) : valueStr;
+  return { facetKey, value };
+}
+
+/** Parse a recent search entry (string or string[]). Returns FacetTag[] or null if invalid. */
+function parseRecentSearchEntry(entry: string | string[]): FacetTag[] | null {
+  const parts = Array.isArray(entry) ? entry : [entry];
+  const tags: FacetTag[] = [];
+  const seenFacets = new Set<string>();
+  for (const part of parts) {
+    const parsed = parseFacetValue(part);
+    if (!parsed || seenFacets.has(parsed.facetKey)) return null;
+    seenFacets.add(parsed.facetKey);
+    tags.push({ facet: parsed.facetKey, value: parsed.value });
+  }
+  return tags.length > 0 ? tags : null;
+}
+
+/** Normalize recent search for storage: always string[]. */
+function toStorageFormat(tags: FacetTag[]): string[] {
+  return tags.map((t) => `${t.facet}:${t.value}`);
+}
+
 /** Get unique values for a facet from data, filtered by valuePrefix (case-insensitive) */
 function getFilteredValues(
   data: HttpLog[],
@@ -51,10 +81,39 @@ function getFilteredValues(
 
 type DropdownOption =
   | { kind: "facet"; facetKey: string; label: string }
-  | { kind: "value"; value: string | number; facetKey: string };
+  | { kind: "value"; value: string | number; facetKey: string }
+  | { kind: "recentSearch"; tags: FacetTag[] };
+
+const SearchIcon = () => (
+  <svg className="shrink-0 w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+  </svg>
+);
+
+const ClockIcon = () => (
+  <svg className="shrink-0 w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
 
 export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
   const [tags, setTags] = useState<FacetTag[]>([]);
+  const [recentSearches, setRecentSearches] = useState<string[][]>(() => {
+    try {
+      const saved = localStorage.getItem("fuzzy-search-recent-searches");
+      if (saved) {
+        const parsed = JSON.parse(saved) as (string[] | string)[];
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+          .slice(0, 5)
+          .map((entry) => (Array.isArray(entry) ? entry : [entry]))
+          .filter((arr) => arr.length > 0 && arr.every((s) => typeof s === "string"));
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
   const [inputValue, setInputValue] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -93,7 +152,20 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
     }));
   }, [data, inputValue, inFacetMode, inValueMode, facetKey, valuePrefix]);
 
-  const showDropdown = (inFacetMode && inputFocused) || inValueMode;
+  /** In facet mode: main facets + recent. In value mode: same as dropdownOptions. */
+  const allSelectableOptions = useMemo((): DropdownOption[] => {
+    if (!inFacetMode) return dropdownOptions;
+    const recentOptions: DropdownOption[] = [];
+    for (const entry of recentSearches) {
+      const tags = parseRecentSearchEntry(entry);
+      if (tags) {
+        recentOptions.push({ kind: "recentSearch", tags });
+      }
+    }
+    return [...dropdownOptions, ...recentOptions];
+  }, [inFacetMode, dropdownOptions, recentSearches]);
+
+  const showDropdown = ((inFacetMode && inputFocused) || inValueMode) && allSelectableOptions.length > 0;
 
   // Show dropdown when in facet mode (focused + empty) or value mode; reset highlighted index
   useEffect(() => {
@@ -104,6 +176,7 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
   // Filter data by tags and notify parent
   // Same facet chosen multiple times (e.g. method:delete, method:post) → OR within that facet
   // Different facets → AND across facets
+  // NOTE: THis is more of an assumption made on my part, it would be great to explore allowing users to type OR, AND, NOT to include their desired search logic in their queries.
   useEffect(() => {
     if (tags.length === 0) {
       onChange(data);
@@ -131,6 +204,13 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
     onChange(filtered);
   }, [data, tags, onChange]);
 
+  // Persist recent searches to localStorage
+  useEffect(() => {
+    if (recentSearches.length > 0) {
+      localStorage.setItem("fuzzy-search-recent-searches", JSON.stringify(recentSearches));
+    }
+  }, [recentSearches]);
+
   // Click outside to close dropdown
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -149,6 +229,13 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
   }
 
   function addTag(value: string | number, facetKeyForTag: string) {
+    const newTags: FacetTag[] = [...tags, { facet: facetKeyForTag, value }];
+    const query = toStorageFormat(newTags);
+    const queryKey = query.slice().sort().join("|");
+    setRecentSearches((prev) => {
+      const filtered = prev.filter((q) => q.slice().sort().join("|") !== queryKey);
+      return [query, ...filtered].slice(0, 5);
+    });
     setTags((t) => [...t, { facet: facetKeyForTag, value }]);
     setInputValue("");
     setHighlightedIndex(0);
@@ -156,9 +243,24 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
     // Keep dropdown open - user returns to facet mode (empty input) and can add more filters
   }
 
+  function applyRecentSearch(tagsToApply: FacetTag[]) {
+    const query = toStorageFormat(tagsToApply);
+    const queryKey = query.slice().sort().join("|");
+    setRecentSearches((prev) => {
+      const filtered = prev.filter((q) => q.slice().sort().join("|") !== queryKey);
+      return [query, ...filtered].slice(0, 5);
+    });
+    setTags(tagsToApply);
+    setInputValue("");
+    setHighlightedIndex(0);
+    inputRef.current?.focus();
+  }
+
   function handleSelectOption(opt: DropdownOption) {
     if (opt.kind === "facet") {
       selectFacet(opt.facetKey);
+    } else if (opt.kind === "recentSearch") {
+      applyRecentSearch(opt.tags);
     } else {
       addTag(opt.value, opt.facetKey);
     }
@@ -173,20 +275,20 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
       setTags((t) => t.slice(0, -1));
       return;
     }
-    if (!dropdownOpen || dropdownOptions.length === 0) return;
+    if (!dropdownOpen || allSelectableOptions.length === 0) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlightedIndex((i) => (i + 1) % dropdownOptions.length);
+      setHighlightedIndex((i) => (i + 1) % allSelectableOptions.length);
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      setHighlightedIndex((i) => (i - 1 + dropdownOptions.length) % dropdownOptions.length);
+      setHighlightedIndex((i) => (i - 1 + allSelectableOptions.length) % allSelectableOptions.length);
       return;
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      const opt = dropdownOptions[highlightedIndex];
+      const opt = allSelectableOptions[highlightedIndex];
       if (opt !== undefined) handleSelectOption(opt);
     }
   }
@@ -228,7 +330,7 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
           aria-expanded={dropdownOpen ? "true" : "false"}
           aria-controls={dropdownOpen ? listboxId : undefined}
           aria-activedescendant={
-            dropdownOpen && dropdownOptions.length > 0 ? getOptionId(highlightedIndex) : undefined
+            dropdownOpen && allSelectableOptions.length > 0 ? getOptionId(highlightedIndex) : undefined
           }
           aria-autocomplete="list"
           aria-haspopup="listbox"
@@ -260,40 +362,106 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
         aria-atomic="true"
         className="sr-only"
       >
-        {dropdownOpen && dropdownOptions.length > 0
+        {dropdownOpen && allSelectableOptions.length > 0
           ? (() => {
-              const opt = dropdownOptions[highlightedIndex];
-              const selectedText = opt ? (opt.kind === "facet" ? opt.label : String(opt.value)) : "";
-              return `${dropdownOptions.length} options, ${selectedText} selected`;
+              const opt = allSelectableOptions[highlightedIndex];
+              const selectedText = opt
+                ? opt.kind === "facet"
+                  ? opt.label
+                  : opt.kind === "recentSearch"
+                    ? opt.tags.map((t) => `${t.facet}:${t.value}`).join(" ")
+                    : String(opt.value)
+                : "";
+              return `${allSelectableOptions.length} options, ${selectedText} selected`;
             })()
           : ""}
       </div>
 
       {/* Dropdown */}
-      {dropdownOpen && dropdownOptions.length > 0 && (
+      {dropdownOpen && allSelectableOptions.length > 0 && (
         <ul
           ref={dropdownRef}
           id={listboxId}
           role="listbox"
           aria-label={inFacetMode ? "Available facets" : "Facet values"}
-          className="absolute left-0 right-0 top-full mt-1 z-10 bg-zinc-800 border border-zinc-700 rounded-lg shadow-lg max-h-60 overflow-auto"
+          className="absolute left-0 right-0 top-full mt-1 z-10 bg-zinc-800 border border-zinc-700 rounded-lg shadow-lg max-h-60 overflow-auto text-left"
         >
-          {dropdownOptions.map((opt, i) => (
-            <li
-              key={opt.kind === "facet" ? opt.facetKey : `${opt.facetKey}-${opt.value}`}
-              id={getOptionId(i)}
-              role="option"
-              aria-selected={i === highlightedIndex}
-              className={`px-3 py-2 text-sm cursor-pointer transition-colors ${
-                i === highlightedIndex ? "bg-blue-600/30 text-zinc-100" : "text-zinc-300 hover:bg-zinc-700/50"
-              }`}
-              onMouseEnter={() => setHighlightedIndex(i)}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => handleSelectOption(opt)}
-            >
-              {opt.kind === "facet" ? opt.label : String(opt.value)}
-            </li>
-          ))}
+          {inFacetMode ? (
+            <>
+              {/* Main facets with magnifying glass */}
+              {dropdownOptions.map((opt, i) => (
+                <li
+                  key={opt.kind === "facet" ? opt.facetKey : opt.kind === "value" ? `${opt.facetKey}-${opt.value}` : opt.tags.map((t) => `${t.facet}:${t.value}`).join("-")}
+                  id={getOptionId(i)}
+                  role="option"
+                  aria-selected={i === highlightedIndex}
+                  className={`flex items-center gap-2 px-3 py-2 text-sm cursor-pointer transition-colors ${
+                    i === highlightedIndex ? "bg-blue-600/30 text-zinc-100" : "text-zinc-300 hover:bg-zinc-700/50"
+                  }`}
+                  onMouseEnter={() => setHighlightedIndex(i)}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => handleSelectOption(opt)}
+                >
+                  <SearchIcon />
+                  {opt.kind === "facet" ? `${opt.label.toLowerCase()}:` : opt.kind === "value" ? String(opt.value) : opt.tags.map((t) => `${t.facet}:${t.value}`).join(" ")}
+                </li>
+              ))}
+              {/* Divider + Recent searches */}
+              {recentSearches.some((entry) => parseRecentSearchEntry(entry)) && (
+                <li role="group" aria-label="Recent searches" className="list-none [&>ul]:list-none [&>ul]:p-0 [&>ul]:m-0 border-t border-zinc-600 mt-1 pt-1">
+                  <span className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wider" aria-hidden>
+                    <ClockIcon />
+                    Recent searches
+                  </span>
+                  <ul className="[&>li]:flex [&>li]:items-center [&>li]:gap-2">
+                  {recentSearches
+                    .map((entry) => parseRecentSearchEntry(entry))
+                    .filter((tags): tags is FacetTag[] => tags !== null)
+                    .map((tags, j) => {
+                      const opt: DropdownOption = { kind: "recentSearch", tags };
+                      const i = dropdownOptions.length + j;
+                      const displayText = tags.map((t) => `${t.facet}:${t.value}`).join(" ");
+                      return (
+                        <li
+                          key={`recent-${displayText}`}
+                          id={getOptionId(i)}
+                          role="option"
+                          aria-selected={i === highlightedIndex}
+                          className={`flex items-center gap-2 px-3 py-2 text-sm cursor-pointer transition-colors ${
+                            i === highlightedIndex ? "bg-blue-600/30 text-zinc-100" : "text-zinc-300 hover:bg-zinc-700/50"
+                          }`}
+                          onMouseEnter={() => setHighlightedIndex(i)}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => handleSelectOption(opt)}
+                        >
+                          <ClockIcon />
+                          {displayText}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </li>
+              )}
+            </>
+          ) : (
+            /* Value mode - no recent section */
+            dropdownOptions.map((opt, i) => (
+              <li
+                key={opt.kind === "facet" ? opt.facetKey : opt.kind === "value" ? `${opt.facetKey}-${opt.value}` : opt.tags.map((t) => `${t.facet}:${t.value}`).join("-")}
+                id={getOptionId(i)}
+                role="option"
+                aria-selected={i === highlightedIndex}
+                className={`px-3 py-2 text-sm cursor-pointer transition-colors ${
+                  i === highlightedIndex ? "bg-blue-600/30 text-zinc-100" : "text-zinc-300 hover:bg-zinc-700/50"
+                }`}
+                onMouseEnter={() => setHighlightedIndex(i)}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSelectOption(opt)}
+              >
+                {opt.kind === "facet" ? `${opt.label.toLowerCase()}:` : opt.kind === "value" ? String(opt.value) : opt.tags.map((t) => `${t.facet}:${t.value}`).join(" ")}
+              </li>
+            ))
+          )}
         </ul>
       )}
     </div>
