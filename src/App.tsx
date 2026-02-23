@@ -38,6 +38,7 @@ function App() {
   const [data, setData] = useState<HttpLog[]>(sampleData);
   return (
     <div className="my-10 flex flex-col items-center gap-14 justify-start h-full">
+      {/* FuzzySearch receives full dataset for facet values; onChange delivers filtered results */}
       <FuzzySearch data={sampleData} onChange={setData} />
 
       <Table
