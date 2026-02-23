@@ -132,6 +132,9 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
     }
   }
 
+  const listboxId = "fuzzy-search-listbox";
+  const getOptionId = (i: number) => `fuzzy-search-option-${i}`;
+
   return (
     <div
       ref={containerRef}
@@ -157,27 +160,51 @@ export function FuzzySearch({ data, onChange }: FuzzySearchProps) {
         ))}
       </div>
 
-      {/* Inline input */}
+      {/* Inline input - combobox pattern */}
       <input
         ref={inputRef}
         type="text"
+        role="combobox"
+        aria-expanded={dropdownOpen}
+        aria-controls={dropdownOpen ? listboxId : undefined}
+        aria-activedescendant={
+          dropdownOpen && dropdownOptions.length > 0 ? getOptionId(highlightedIndex) : undefined
+        }
+        aria-autocomplete="list"
+        aria-haspopup="listbox"
+        aria-label="Filter by facet. Type facet name followed by colon, e.g. method:"
         value={inputValue}
         onChange={(e) => setInputValue(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="Type facet: to filter..."
-        className="flex-1 min-w-[120px] bg-transparent text-zinc-100 placeholder-zinc-500 border-none outline-none focus:ring-0 py-1"
+        className="flex-1 min-w-[120px] bg-transparent text-zinc-100 placeholder-zinc-500 border-none outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-zinc-900 rounded py-1"
       />
+
+      {/* Screen reader live region for dropdown state */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {dropdownOpen && dropdownOptions.length > 0
+          ? `${dropdownOptions.length} options, ${String(dropdownOptions[highlightedIndex])} selected`
+          : ""}
+      </div>
 
       {/* Dropdown */}
       {dropdownOpen && dropdownOptions.length > 0 && (
         <ul
           ref={dropdownRef}
+          id={listboxId}
           role="listbox"
+          aria-label="Facet values"
           className="absolute left-0 right-0 top-full mt-1 z-10 bg-zinc-800 border border-zinc-700 rounded-lg shadow-lg max-h-60 overflow-auto"
         >
           {dropdownOptions.map((opt, i) => (
             <li
               key={String(opt)}
+              id={getOptionId(i)}
               role="option"
               aria-selected={i === highlightedIndex ? "true" : "false"}
               className={`px-3 py-2 text-sm cursor-pointer ${
