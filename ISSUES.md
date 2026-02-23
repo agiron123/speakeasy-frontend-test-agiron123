@@ -4,7 +4,7 @@ Issues derived from the Fuzzy Search Component Implementation Plan.
 
 ---
 
-## Issue 1: Define Facet Configuration
+## Issue 1: Define Facet Configuration ✅
 
 **Priority:** High
 
@@ -127,7 +127,7 @@ Document in README or code comments:
 
 ---
 
-## Issue 10: Export FacetTag Type (Optional)
+## Issue 10: Export FacetTag Type (Optional) ✅
 
 **Priority:** Low
 
