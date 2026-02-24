@@ -12,6 +12,16 @@ pnpm install
 pnpm dev
 ```
 
+## Export Cursor Chats
+
+To export Cursor agent transcripts for this repo to a readable Markdown file:
+
+```bash
+node export-cursor-chats.mjs
+```
+
+This writes to `cursor-chats-export.md` in the project root. Transcripts are read from `~/.cursor/projects/<project>/agent-transcripts/`. If the script can’t find your transcripts, update the `TRANSCRIPTS_DIR` path in `export-cursor-chats.mjs` to match your project path (e.g. replace `Users-andre-Documents-Code-speakeasy-frontend-test-agiron123` with your machine’s path segment).
+
 ---
 
 # Development Process
